@@ -16,14 +16,18 @@
 //   - A tray icon shows the state. Left-click pauses/resumes; right-click opens a
 //     Windows 11-style menu that follows the system light/dark mode.
 //     The paused state is remembered (HKCU\Software\BrightnessMirror\Paused).
+//   - "Start with Windows" is a normal startup-app entry (HKCU\...\Run), so it also shows
+//     in Task Manager > Startup apps and Settings > Apps > Startup, where it can be switched off.
 //
-// Settings: BrightnessMirror.ini next to the exe (re-read automatically when it changes).
-// Log:      BrightnessMirror.log next to the exe.
+// Settings: %LOCALAPPDATA%\BrightnessMirror\BrightnessMirror.ini (re-read automatically when it changes).
+// Log:      %LOCALAPPDATA%\BrightnessMirror\BrightnessMirror.log
+// The exe never writes next to itself, so it can live in Program Files.
 //
-// Build (no SDK needed, uses the C# compiler that ships with Windows):
-//   %WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe /target:winexe /optimize+
-//       /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Core.dll
-//       /out:BrightnessMirror.exe BrightnessMirror.cs
+// Command line (used by the installer; does its job and exits):
+//   --startup on | off | remove      turn "Start with Windows" on or off, or delete the entry
+//
+// Build: run build.ps1 from the repository root. No SDK is needed; it uses the C# compiler
+// that ships with Windows, and Inno Setup 6 for the installer.
 
 using System;
 using System.Collections.Generic;
@@ -32,23 +36,42 @@ using System.Drawing.Drawing2D;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
+
+// Shown in Task Manager (Startup apps), the exe's Properties and the installer.
+[assembly: AssemblyTitle("Brightness Mirror")]
+[assembly: AssemblyDescription("Copies the laptop screen's brightness to external monitors over DDC/CI")]
+[assembly: AssemblyCompany("kstawi")]
+[assembly: AssemblyProduct("Brightness Mirror")]
+[assembly: AssemblyCopyright("Copyright (C) 2026 kstawi. GPL-3.0.")]
+[assembly: AssemblyVersion("1.1.0.0")]
+[assembly: AssemblyFileVersion("1.1.0.0")]
+[assembly: AssemblyInformationalVersion("1.1.0")]
 
 namespace BrightnessMirror
 {
     static class Program
     {
         public static readonly string AppDir = AppDomain.CurrentDomain.BaseDirectory;
+        public static readonly string DataDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "BrightnessMirror");
 
         [DllImport("user32.dll")]
         static extern bool SetProcessDPIAware();
 
         [STAThread]
-        static int Main()
+        static int Main(string[] args)
         {
+            try { Directory.CreateDirectory(DataDir); } catch { }
+
+            // Installer command: change the startup entry and exit without starting the app.
+            if (args.Length == 2 && args[0] == "--startup")
+                return StartupEntry.Apply(args[1]) ? 0 : 1;
+
             bool createdNew;
             using (var mutex = new Mutex(true, @"Local\BrightnessMirror-single-instance", out createdNew))
             {
@@ -60,7 +83,10 @@ namespace BrightnessMirror
                 Application.ThreadException += (s, e) => Log.Write("UI error: " + e.Exception);
                 Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
 
-                Log.Write("Started (pid " + System.Diagnostics.Process.GetCurrentProcess().Id + ")");
+                Log.Write("Started v" + Application.ProductVersion + " from " + Application.ExecutablePath +
+                          " (pid " + System.Diagnostics.Process.GetCurrentProcess().Id + ")");
+                Config.EnsureExists();
+                StartupEntry.RepairPath();
                 var mirror = new Mirror();
                 using (var tray = new Tray(mirror))
                 {
@@ -373,9 +399,12 @@ namespace BrightnessMirror
             menu = new TrayMenu(
                 TogglePause,
                 mirror.SyncNow,
-                () => OpenInNotepad(Config.FilePath),
+                ToggleStartup,
+                () => { Config.EnsureExists(); OpenInNotepad(Config.FilePath); },
                 () => OpenInNotepad(Log.LogPath),
                 Exit);
+            // Re-read on every open: the entry can also be switched in Task Manager or Settings.
+            menu.Strip.Opening += (s, e) => menu.SetStartup(StartupEntry.IsEnabled());
 
             notifyIcon.ContextMenuStrip = menu.Strip;
             notifyIcon.MouseClick += (s, e) => { if (e.Button == MouseButtons.Left) TogglePause(); };
@@ -397,6 +426,20 @@ namespace BrightnessMirror
             Show(shown);
         }
 
+        void ToggleStartup()
+        {
+            try
+            {
+                if (StartupEntry.IsEnabled()) StartupEntry.Disable();
+                else StartupEntry.Enable();
+            }
+            catch (Exception e)
+            {
+                Log.Write("Could not change Start with Windows: " + e.Message);
+            }
+            menu.SetStartup(StartupEntry.IsEnabled());
+        }
+
         void Show(Mirror.Snapshot s)
         {
             shown = s;
@@ -406,7 +449,7 @@ namespace BrightnessMirror
 
             if (paused)
             {
-                line = "Paused – click the icon to turn on";
+                line = "Paused \u2013 click the icon to turn on";
                 color = PausedColor;
             }
             else
@@ -414,11 +457,11 @@ namespace BrightnessMirror
                 switch (s.State)
                 {
                     case Mirror.State.Starting:
-                        line = "On – looking for external monitors";
+                        line = "On \u2013 looking for external monitors";
                         color = OnColor;
                         break;
                     case Mirror.State.Ready:
-                        line = "On – " + s.MonitorCount + " external monitor" + (s.MonitorCount == 1 ? "" : "s") + " ready";
+                        line = "On \u2013 " + s.MonitorCount + " external monitor" + (s.MonitorCount == 1 ? "" : "s") + " ready";
                         color = OnColor;
                         break;
                     case Mirror.State.NoMonitor:
@@ -426,11 +469,11 @@ namespace BrightnessMirror
                         color = ProblemColor;
                         break;
                     case Mirror.State.Failed:
-                        line = "Last change failed – see the log";
+                        line = "Last change failed \u2013 see the log";
                         color = ProblemColor;
                         break;
                     default:
-                        line = "On – laptop " + s.Laptop + "% → external " + s.External + "%";
+                        line = "On \u2013 laptop " + s.Laptop + "% \u2192 external " + s.External + "%";
                         color = OnColor;
                         break;
                 }
@@ -455,10 +498,16 @@ namespace BrightnessMirror
             catch (Exception e) { Log.Write("Could not open " + path + ": " + e.Message); }
         }
 
-        // A small sun: filled when on, hollow when paused.
         static Icon MakeIcon(int size, Color color, bool hollow)
         {
-            using (var bmp = new Bitmap(size, size))
+            using (var bmp = DrawSun(size, color, hollow))
+                return Icon.FromHandle(bmp.GetHicon());
+        }
+
+        // A small sun: filled when on, hollow when paused. tools/MakeIcon.cs uses it for the app icon.
+        public static Bitmap DrawSun(int size, Color color, bool hollow)
+        {
+            var bmp = new Bitmap(size, size);
             using (var g = Graphics.FromImage(bmp))
             using (var pen = new Pen(color, Math.Max(1.5f, size / 10f)) { StartCap = LineCap.Round, EndCap = LineCap.Round })
             using (var brush = new SolidBrush(color))
@@ -477,8 +526,8 @@ namespace BrightnessMirror
                     float cos = (float)Math.Cos(a), sin = (float)Math.Sin(a);
                     g.DrawLine(pen, c + cos * r1, c + sin * r1, c + cos * r2, c + sin * r2);
                 }
-                return Icon.FromHandle(bmp.GetHicon());
             }
+            return bmp;
         }
 
         public void Dispose()
@@ -493,15 +542,16 @@ namespace BrightnessMirror
     sealed class TrayMenu
     {
         public readonly ContextMenuStrip Strip = new ContextMenuStrip();
-        public bool? ForceDark; // null = follow the system setting
+        public bool? ForceDark = null; // null = follow the system setting; set by the preview tool
 
         readonly Win11MenuRenderer renderer;
         readonly ToolStripMenuItem statusItem;
         readonly ToolStripMenuItem toggleItem;
         readonly ToolStripMenuItem syncItem;
+        readonly ToolStripMenuItem startupItem;
         readonly float scale;
 
-        public TrayMenu(Action toggle, Action sync, Action editSettings, Action openLog, Action exit)
+        public TrayMenu(Action toggle, Action sync, Action toggleStartup, Action editSettings, Action openLog, Action exit)
         {
             using (var g = Graphics.FromHwnd(IntPtr.Zero)) scale = g.DpiX / 96f;
             renderer = new Win11MenuRenderer(scale);
@@ -518,6 +568,7 @@ namespace BrightnessMirror
             statusItem.Enabled = false;
             toggleItem = Item("Pause mirroring", Glyphs.Pause, toggle);
             syncItem = Item("Copy laptop brightness now", Glyphs.Sync, sync);
+            startupItem = Item("Start with Windows", null, toggleStartup); // check mark when on
 
             Strip.Items.AddRange(new ToolStripItem[]
             {
@@ -526,6 +577,7 @@ namespace BrightnessMirror
                 toggleItem,
                 syncItem,
                 Separator(),
+                startupItem,
                 Item("Edit settings", Glyphs.Settings, editSettings),
                 Item("Open log", Glyphs.Document, openLog),
                 Separator(),
@@ -541,6 +593,13 @@ namespace BrightnessMirror
             toggleItem.Text = paused ? "Resume mirroring" : "Pause mirroring";
             ((MenuGlyph)toggleItem.Tag).Char = paused ? Glyphs.Play : Glyphs.Pause;
             syncItem.Enabled = !paused;
+            Strip.Invalidate();
+        }
+
+        public void SetStartup(bool enabled)
+        {
+            ((MenuGlyph)startupItem.Tag).Char = enabled ? Glyphs.Check : null;
+            startupItem.AccessibleName = "Start with Windows" + (enabled ? " (on)" : " (off)");
             Strip.Invalidate();
         }
 
@@ -578,12 +637,13 @@ namespace BrightnessMirror
 
     static class Glyphs
     {
-        public const string Pause = "";
-        public const string Play = "";
-        public const string Sync = "";
-        public const string Settings = "";
-        public const string Document = "";
-        public const string Close = "";
+        public const string Check = "\uE73E";
+        public const string Pause = "\uE769";
+        public const string Play = "\uE768";
+        public const string Sync = "\uE895";
+        public const string Settings = "\uE713";
+        public const string Document = "\uE8A5";
+        public const string Close = "\uE711";
     }
 
     // Windows 11 menu colors for light and dark mode.
@@ -870,7 +930,44 @@ namespace BrightnessMirror
         public int IntervalMs = 150; // minimum gap between commands to the monitor
         DateTime stamp;
 
-        public static string FilePath { get { return Path.Combine(Program.AppDir, "BrightnessMirror.ini"); } }
+        public static string FilePath { get { return Path.Combine(Program.DataDir, "BrightnessMirror.ini"); } }
+
+        const string DefaultText =
+            "; BrightnessMirror settings. Changes apply on the next brightness change, no restart needed.\r\n" +
+            "\r\n" +
+            "; External monitor brightness (%) when the laptop screen is at 0% and at 100%.\r\n" +
+            "; Values in between are scaled linearly. Example: MinOutput=10 keeps the external\r\n" +
+            "; monitor 10 points brighter at the dark end.\r\n" +
+            "MinOutput=0\r\n" +
+            "MaxOutput=100\r\n" +
+            "\r\n" +
+            "; Minimum gap between commands sent to the monitor, in milliseconds (50-2000).\r\n" +
+            "; Raise it if the monitor misses changes while you drag the slider.\r\n" +
+            "IntervalMs=150\r\n";
+
+        // Creates the settings file with defaults, or carries it over from versions
+        // that kept it next to the exe.
+        public static void EnsureExists()
+        {
+            try
+            {
+                if (File.Exists(FilePath)) return;
+                string old = Path.Combine(Program.AppDir, "BrightnessMirror.ini");
+                if (File.Exists(old))
+                {
+                    File.Copy(old, FilePath);
+                    Log.Write("Copied settings from " + old);
+                }
+                else
+                {
+                    File.WriteAllText(FilePath, DefaultText);
+                }
+            }
+            catch (Exception e)
+            {
+                Log.Write("Could not create the settings file: " + e.Message);
+            }
+        }
 
         static DateTime CurrentStamp()
         {
@@ -923,6 +1020,109 @@ namespace BrightnessMirror
         }
     }
 
+    // "Start with Windows" as a regular startup-app entry: a value under HKCU\...\Run plus the
+    // StartupApproved flag that Task Manager and Settings > Apps > Startup use to switch it.
+    // Turning it off here works like turning it off there: the entry stays, marked Disabled.
+    static class StartupEntry
+    {
+        const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
+        const string ApprovedKey = @"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run";
+        const string ValueName = "BrightnessMirror";
+
+        static string CommandLine { get { return "\"" + Application.ExecutablePath + "\""; } }
+
+        public static bool IsEnabled()
+        {
+            try
+            {
+                using (var run = Registry.CurrentUser.OpenSubKey(RunKey))
+                    if (run == null || run.GetValue(ValueName) == null) return false;
+                using (var approved = Registry.CurrentUser.OpenSubKey(ApprovedKey))
+                {
+                    var data = approved == null ? null : approved.GetValue(ValueName) as byte[];
+                    return data == null || data.Length == 0 || (data[0] & 1) == 0; // odd first byte = disabled
+                }
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        public static void Enable()
+        {
+            using (var run = Registry.CurrentUser.CreateSubKey(RunKey))
+                run.SetValue(ValueName, CommandLine);
+            SetApproved(2, false);
+            Log.Write("Start with Windows: on (" + CommandLine + ")");
+        }
+
+        public static void Disable()
+        {
+            using (var run = Registry.CurrentUser.OpenSubKey(RunKey))
+                if (run == null || run.GetValue(ValueName) == null) return; // nothing to turn off
+            SetApproved(3, true);
+            Log.Write("Start with Windows: off");
+        }
+
+        public static void Remove()
+        {
+            using (var run = Registry.CurrentUser.OpenSubKey(RunKey, true))
+                if (run != null) run.DeleteValue(ValueName, false);
+            using (var approved = Registry.CurrentUser.OpenSubKey(ApprovedKey, true))
+                if (approved != null) approved.DeleteValue(ValueName, false);
+            Log.Write("Start with Windows: entry removed");
+        }
+
+        // If the entry points at an exe that no longer exists (for example an older copy that
+        // was deleted), point it at this one. An existing other copy is left alone.
+        public static void RepairPath()
+        {
+            try
+            {
+                using (var run = Registry.CurrentUser.OpenSubKey(RunKey, true))
+                {
+                    var current = run == null ? null : run.GetValue(ValueName) as string;
+                    if (current == null || File.Exists(current.Trim('"'))) return;
+                    run.SetValue(ValueName, CommandLine);
+                    Log.Write("Startup entry pointed at a missing file; now " + CommandLine);
+                }
+            }
+            catch (Exception e)
+            {
+                Log.Write("Could not check the startup entry: " + e.Message);
+            }
+        }
+
+        // For the --startup command line.
+        public static bool Apply(string mode)
+        {
+            try
+            {
+                if (mode == "on") Enable();
+                else if (mode == "off") Disable();
+                else if (mode == "remove") Remove();
+                else return false;
+                return true;
+            }
+            catch (Exception e)
+            {
+                Log.Write("--startup " + mode + " failed: " + e.Message);
+                return false;
+            }
+        }
+
+        // 12 bytes: first byte 2 = enabled, 3 = disabled; then the time it was disabled.
+        static void SetApproved(byte state, bool stampTime)
+        {
+            var data = new byte[12];
+            data[0] = state;
+            if (stampTime) BitConverter.GetBytes(DateTime.UtcNow.ToFileTimeUtc()).CopyTo(data, 4);
+            using (var approved = Registry.CurrentUser.CreateSubKey(ApprovedKey))
+                approved.SetValue(ValueName, data, RegistryValueKind.Binary);
+        }
+    }
+
     // Remembers the paused state between runs.
     static class PausedSetting
     {
@@ -958,8 +1158,8 @@ namespace BrightnessMirror
     static class Log
     {
         static readonly object gate = new object();
-        public static readonly string LogPath = Path.Combine(Program.AppDir, "BrightnessMirror.log");
-        static readonly string OldPath = Path.Combine(Program.AppDir, "BrightnessMirror.old.log");
+        public static readonly string LogPath = Path.Combine(Program.DataDir, "BrightnessMirror.log");
+        static readonly string OldPath = Path.Combine(Program.DataDir, "BrightnessMirror.old.log");
         const long MaxBytes = 256 * 1024;
 
         public static void Write(string message)

@@ -34,11 +34,12 @@ namespace BrightnessMirror
             int hover = args.Length > 3 ? int.Parse(args[3]) : -1;
 
             Action none = () => { };
-            var menu = new TrayMenu(none, none, none, none, none) { ForceDark = dark };
+            var menu = new TrayMenu(none, none, none, none, none, none) { ForceDark = dark };
             menu.SetStatus(
-                paused ? "Paused – click the icon to turn on" : "On – laptop 40% → external 40%",
+                paused ? "Paused \u2013 click the icon to turn on" : "On \u2013 laptop 40% \u2192 external 40%",
                 paused ? Tray.PausedColor : Tray.OnColor,
                 paused);
+            menu.SetStartup(true);
             menu.Strip.AutoClose = false;
 
             var origin = new Point(2900, 900);

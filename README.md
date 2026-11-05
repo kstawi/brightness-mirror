@@ -21,6 +21,10 @@ every screen at once.
 - **Tray icon status:** shows whether mirroring is on, paused or has a problem. Hover over it for the
   last change, and left-click to pause or resume.
 - **Windows 11-style menu** that follows the system light/dark mode.
+- **Start with Windows** from the tray menu, as a regular startup app that you can also switch off in
+  Task Manager.
+- **Installer:** installs to Program Files or just for you, with a Start menu entry and a clean
+  uninstall.
 - **Optional mapping:** for example, keep the external monitor a bit brighter than the laptop.
 - **Finds the monitor again** after sleep, unplugging, or display changes.
 - **No dependencies:** one small `.exe`, built with the C# compiler that ships with Windows.
@@ -35,29 +39,35 @@ every screen at once.
 
 ## Install
 
-### Download
+1. Download `BrightnessMirror-Setup-<version>.exe` from [Releases](../../releases) and run it.
+   The installer isn't code-signed, so SmartScreen may warn you. Choose **More info › Run anyway**,
+   or build it yourself (below).
+2. Choose who to install for:
+   - **All users** (the default) installs to `C:\Program Files\Brightness Mirror` and needs admin rights.
+   - **Only for me** installs to `%LOCALAPPDATA%\Programs\Brightness Mirror` without admin rights.
 
-1. Download the latest `BrightnessMirror-*.zip` from [Releases](../../releases), then extract it to a
-   folder you'll keep, for example `%LOCALAPPDATA%\Programs\BrightnessMirror`.
-2. Run `BrightnessMirror.exe`. The exe isn't code-signed, so SmartScreen may warn you. Choose
-   **More info › Run anyway**, or build it yourself (below).
-3. To start it with Windows, press Win+R, type `shell:startup`, and put a shortcut to the exe in that
-   folder.
+   On the next page you can pick a different folder.
+3. Leave **Start Brightness Mirror when I sign in to Windows** ticked if you want it to start
+   automatically. You can change this later from the tray menu.
+
+The installer adds a Start menu entry. To uninstall, use Settings › Apps › Installed apps. Uninstalling
+also removes the startup entry and your settings.
 
 ### Build from source
 
-No SDK is needed. From the repository folder, run:
+No SDK is needed. The C# compiler ships with Windows, and the installer is built with
+[Inno Setup 6](https://jrsoftware.org/isinfo.php). From the repository folder, run:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File install.ps1
+powershell -ExecutionPolicy Bypass -File build.ps1
 ```
 
-This compiles `src\BrightnessMirror.cs`, installs the app to `%LOCALAPPDATA%\Programs\BrightnessMirror`,
-adds it to your startup apps, and starts it. Run it again to update. Uninstall with:
+The output goes to `build\`: `BrightnessMirror.exe` and `BrightnessMirror-Setup-<version>.exe`. Without
+Inno Setup, only the exe is built.
 
-```powershell
-powershell -ExecutionPolicy Bypass -File install.ps1 -Uninstall
-```
+To skip the installer, `install.ps1` builds the exe and installs it for the current user in
+`%LOCALAPPDATA%\Programs\BrightnessMirror`, adds it to startup apps and starts it. `install.ps1 -Uninstall`
+removes it again.
 
 ## Usage
 
@@ -76,16 +86,25 @@ or turn it on in Settings › Personalization › Taskbar › Other system tray 
   - the current status
   - Pause/Resume mirroring
   - Copy laptop brightness now
+  - Start with Windows
   - Edit settings
   - Open log
   - Exit
 
-Starting the app never changes the monitor. It only reacts when the laptop brightness changes.
+Starting the app never changes the monitor. It only reacts when the laptop brightness changes. After
+**Exit**, start it again from the Start menu.
+
+### Start with Windows
+
+The tray menu's **Start with Windows** item adds a normal startup-app entry for your user account.
+Task Manager › Startup apps and Settings › Apps › Startup list it as **Brightness Mirror**, and you can
+switch it on or off in any of the three places. The check mark always shows the current state.
 
 ## Settings
 
-`BrightnessMirror.ini` sits next to the exe. Changes take effect on the next brightness change, with
-no restart needed.
+Settings live in `%LOCALAPPDATA%\BrightnessMirror\BrightnessMirror.ini`. Open it with
+right-click › **Edit settings**. Changes take effect on the next brightness change, with no restart
+needed.
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -104,7 +123,8 @@ Example: `MinOutput=10` keeps the external monitor 10 points brighter at the dar
   `0x10` (brightness) through `dxva2.dll`. Built-in panels don't speak DDC/CI, so they're skipped
   automatically.
 - Monitors are re-scanned at start, after resume or a display change, and whenever a command fails.
-- The log, `BrightnessMirror.log`, sits next to the exe and is capped at 256 KB.
+- The log, `BrightnessMirror.log`, sits next to the settings in `%LOCALAPPDATA%\BrightnessMirror` and is
+  capped at 256 KB. The app never writes next to its exe, so it can run from Program Files.
 
 ## Limitations
 
